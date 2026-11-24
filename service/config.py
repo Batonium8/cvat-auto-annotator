@@ -7,7 +7,17 @@ class Settings(BaseSettings):
     cvat_pass: str = "admin"
     service_port: int = 8000
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # Настройки YOLOE (Этап 2)
+    yoloe_weights: str = "yoloe-11s-seg.pt"
+    yoloe_conf: float = 0.25
+    yoloe_imgsz: int = 640
+    yoloe_device: str | None = None  # None -> автовыбор ("cuda", если доступна, иначе "cpu")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()

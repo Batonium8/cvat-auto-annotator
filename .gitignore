@@ -8,3 +8,4 @@ thirdparty/dart/
 *.pth
 *.onnx
 .vscode/
+mobileclip_*.ts
