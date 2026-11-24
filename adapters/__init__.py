@@ -1,3 +1,4 @@
-from adapters.registry import get_adapter, list_available_models
+from adapters.matryoshka import MatryoshkaAdapter
+from adapters.yoloe import YoloeAdapter
 
-__all__ = ["get_adapter", "list_available_models"]
+__all__ = ["MatryoshkaAdapter", "YoloeAdapter"]

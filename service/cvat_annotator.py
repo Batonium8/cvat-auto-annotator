@@ -1,14 +1,23 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 
 import PIL.Image
 from cvat_sdk import make_client, models
 
-from adapters import get_adapter
-from core import DetectionContext
+from core import BaseDetectorAdapter, DetectionContext
 from service.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TaskMeta:
+    """Базовые метаданные задачи CVAT для pre-flight проверки."""
+
+    task_id: int
+    labels: tuple[str, ...]
+    total_frames: int
 
 
 @dataclass(frozen=True)
@@ -22,27 +31,28 @@ class AnnotationResult:
     labels: tuple[str, ...] = ()
 
 
-def get_task_labels(task_id: int) -> list[str]:
-    """Проверяет существование задачи в CVAT и возвращает список её классов."""
+def get_task_meta(task_id: int) -> TaskMeta:
+    """Проверяет существование задачи в CVAT и возвращает её классы и число кадров."""
     with make_client(
         host=settings.cvat_host,
         credentials=(settings.cvat_user, settings.cvat_pass),
     ) as client:
         task = client.tasks.retrieve(task_id)
-        return [label.name for label in task.get_labels()]
+        labels = tuple(label.name for label in task.get_labels())
+        return TaskMeta(task_id=task_id, labels=labels, total_frames=task.size)
 
 
 def annotate_task(
     task_id: int,
-    model_name: str = "pseudo",
+    adapter: BaseDetectorAdapter,
     prompts: dict[str, str] | None = None,
-    clear_existing: bool = True,
+    clear_existing: bool = False,
+    on_progress: Callable[[int, int, int], None] | None = None,
 ) -> AnnotationResult:
     """
-    Забирает кадры и классы задачи из CVAT, прогоняет через выбранный адаптер
+    Забирает кадры и классы задачи из CVAT, прогоняет через переданный адаптер
     и сохраняет полученные прямоугольники обратно в задачу.
     """
-    adapter = get_adapter(model_name)
     prompts_map = prompts or {}
 
     with make_client(
@@ -71,10 +81,11 @@ def annotate_task(
             )
 
         logger.info(
-            "Старт разметки задачи #%d: модель='%s', кадров=%d, классы=%s",
+            "Старт разметки задачи #%d: модель='%s', кадров=%d, clear_existing=%s, классы=%s",
             task_id,
             adapter.name,
             task.size,
+            clear_existing,
             label_names,
         )
 
@@ -108,12 +119,16 @@ def annotate_task(
                     )
                 )
 
-            if (frame_idx + 1) % 5 == 0 or (frame_idx + 1) == task.size:
+            processed = frame_idx + 1
+            if on_progress is not None:
+                on_progress(processed, task.size, len(shapes))
+
+            if processed % 5 == 0 or processed == task.size:
                 logger.info(
                     "Задача #%d [%s]: обработано %d/%d кадров (рамок: %d)",
                     task_id,
                     adapter.name,
-                    frame_idx + 1,
+                    processed,
                     task.size,
                     len(shapes),
                 )
