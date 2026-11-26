@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+plugin/
+weights/
+*.pt
+*.ts
+*.part
+README.md
+install_plugin.sh
+thirdparty/dart/.git

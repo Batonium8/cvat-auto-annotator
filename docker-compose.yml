@@ -1,0 +1,20 @@
+services:
+  auto-annotator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    container_name: cvat_auto_annotator
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      CVAT_HOST: ${CVAT_HOST:-http://localhost:8080}
+      YOLOE_WEIGHTS: ${DOCKER_YOLOE_WEIGHTS:-/app/weights/yoloe-11s-seg.pt}
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ./weights:/app/weights
+      - ./mobileclip_blt.ts:/app/mobileclip_blt.ts:ro
