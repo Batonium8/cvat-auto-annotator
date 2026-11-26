@@ -3,6 +3,7 @@ import ReactDOM from "react-dom";
 import {
   Alert,
   Button,
+  Checkbox,
   Input,
   Modal,
   Select,
@@ -20,6 +21,7 @@ import {
   fetchAvailableModels,
   formatModelDisplayName,
   getAutoAnnotateBaseUrl,
+  ModelInfoItem,
   PromptsMap,
   triggerAutoAnnotationWithNotifications,
 } from "./auto-annotate-service";
@@ -45,17 +47,43 @@ interface PromptRow {
   labelName: string;
 }
 
+const DEFAULT_MODELS_INFO: ModelInfoItem[] = [
+  {
+    name: "pseudo",
+    is_loaded: true,
+    can_detect: true,
+    supports_prompts: false,
+    can_segment: false,
+  },
+  {
+    name: "yoloe",
+    is_loaded: false,
+    can_detect: true,
+    supports_prompts: true,
+    can_segment: false,
+  },
+  {
+    name: "dart",
+    is_loaded: false,
+    can_detect: true,
+    supports_prompts: true,
+    can_segment: false,
+  },
+];
+
 export function AutoAnnotateModal(
   props: AutoAnnotateModalProps,
 ): React.ReactElement {
   const { visible, taskId, taskName, labels, onClose, onSuccess } = props;
 
-  const [models, setModels] = useState<string[]>(["pseudo", "yoloe", "dart"]);
+  const [modelsInfo, setModelsInfo] =
+    useState<ModelInfoItem[]>(DEFAULT_MODELS_INFO);
   const [selectedModel, setSelectedModel] =
     useState<AutoAnnotateModel>("yoloe");
   const [loadingModels, setLoadingModels] = useState<boolean>(false);
   const [modelsFallback, setModelsFallback] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [clearExisting, setClearExisting] = useState<boolean>(false);
   const [promptsMap, setPromptsMap] = useState<PromptsMap>({});
 
   const labelNames = useMemo(
@@ -77,6 +105,7 @@ export function AutoAnnotateModal(
     }
 
     setPromptsMap(buildDefaultPrompts(labelNames));
+    setClearExisting(false);
 
     let cancelled = false;
     setLoadingModels(true);
@@ -86,7 +115,7 @@ export function AutoAnnotateModal(
         if (cancelled) {
           return;
         }
-        setModels(result.models);
+        setModelsInfo(result.modelsInfo);
         setModelsFallback(result.isFallback);
 
         if (result.models.includes("yoloe")) {
@@ -108,6 +137,15 @@ export function AutoAnnotateModal(
     };
   }, [visible, labelNames]);
 
+  const selectedModelInfo = useMemo(
+    () => modelsInfo.find((item) => item.name === selectedModel) || null,
+    [modelsInfo, selectedModel],
+  );
+
+  const supportsPrompts = selectedModelInfo
+    ? selectedModelInfo.supports_prompts
+    : selectedModel !== "pseudo";
+
   const handlePromptChange = (labelName: string, value: string): void => {
     setPromptsMap((prev) => ({
       ...prev,
@@ -124,7 +162,7 @@ export function AutoAnnotateModal(
     try {
       let finalPrompts: PromptsMap | null = null;
 
-      if (selectedModel !== "pseudo" && labelNames.length > 0) {
+      if (supportsPrompts && labelNames.length > 0) {
         const normalized: PromptsMap = {};
         labelNames.forEach((name) => {
           const customValue = (promptsMap[name] || "").trim();
@@ -137,6 +175,7 @@ export function AutoAnnotateModal(
         taskId,
         selectedModel,
         finalPrompts,
+        clearExisting,
       );
 
       if (response) {
@@ -159,8 +198,6 @@ export function AutoAnnotateModal(
     [labelNames],
   );
 
-  const isPseudoModel = selectedModel === "pseudo";
-
   const columns: TableProps<PromptRow>["columns"] = [
     {
       title: "Класс CVAT",
@@ -177,7 +214,7 @@ export function AutoAnnotateModal(
         <Input
           value={promptsMap[record.labelName] ?? record.labelName}
           placeholder={record.labelName}
-          disabled={isPseudoModel || submitting}
+          disabled={submitting}
           onChange={(event) =>
             handlePromptChange(record.labelName, event.target.value)
           }
@@ -227,9 +264,19 @@ export function AutoAnnotateModal(
               style={{ width: "100%" }}
               onChange={(value: AutoAnnotateModel) => setSelectedModel(value)}
             >
-              {models.map((modelId) => (
-                <Select.Option key={modelId} value={modelId}>
-                  {formatModelDisplayName(modelId)}
+              {modelsInfo.map((item) => (
+                <Select.Option key={item.name} value={item.name}>
+                  <Space size="small">
+                    <span>{formatModelDisplayName(item.name)}</span>
+                    {item.is_loaded && item.name !== "pseudo" && (
+                      <Tag color="green" style={{ marginRight: 0 }}>
+                        загружена
+                      </Tag>
+                    )}
+                    {!item.supports_prompts && (
+                      <Tag style={{ marginRight: 0 }}>без промптов</Tag>
+                    )}
+                  </Space>
                 </Select.Option>
               ))}
             </Select>
@@ -241,9 +288,27 @@ export function AutoAnnotateModal(
             type="info"
             showIcon
             message="Список моделей загружен по умолчанию"
-            description={`Эндпоинт ${getAutoAnnotateBaseUrl()}/models не ответил — показаны доступные профили по умолчанию.`}
+            description={`Эндпоинты ${getAutoAnnotateBaseUrl()}/models/info и /models не ответили — показаны профили по умолчанию.`}
           />
         )}
+
+        <div>
+          <Checkbox
+            checked={clearExisting}
+            disabled={submitting}
+            onChange={(event) => setClearExisting(event.target.checked)}
+          >
+            Очистить существующую разметку перед записью
+          </Checkbox>
+          <Text
+            type={clearExisting ? "warning" : "secondary"}
+            style={{ display: "block", marginTop: 4, marginLeft: 24, fontSize: 12 }}
+          >
+            {clearExisting
+              ? "Внимание: все текущие аннотации в задаче будут удалены и заменены результатами этой модели."
+              : "По умолчанию новые рамки добавляются поверх существующих — можно последовательно накладывать разные модели."}
+          </Text>
+        </div>
 
         {labelNames.length === 0 ? (
           <Alert
@@ -251,6 +316,13 @@ export function AutoAnnotateModal(
             showIcon
             message="У задачи нет классов (labels)"
             description="Добавьте хотя бы один класс в настройках задачи CVAT перед запуском авторазметки."
+          />
+        ) : !supportsPrompts ? (
+          <Alert
+            type="info"
+            showIcon
+            message="Текстовые запросы не требуются"
+            description="Выбранная модель работает напрямую по классам задачи CVAT без настройки текстовых промптов."
           />
         ) : (
           <div>
@@ -263,32 +335,20 @@ export function AutoAnnotateModal(
               }}
             >
               <Text strong>Соответствие классов и текстовых запросов</Text>
-              {!isPseudoModel && (
-                <Button
-                  size="small"
-                  type="link"
-                  disabled={submitting}
-                  onClick={handleResetPrompts}
-                >
-                  Сбросить по умолчанию
-                </Button>
-              )}
+              <Button
+                size="small"
+                type="link"
+                disabled={submitting}
+                onClick={handleResetPrompts}
+              >
+                Сбросить по умолчанию
+              </Button>
             </div>
-
-            {isPseudoModel && (
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 8 }}
-                message="Режим псевдоразметки («Матрёшка»)"
-                description="Промпты не используются: бэкенд сгенерирует вложенные рамки по центру кадра для каждого класса задачи."
-              />
-            )}
 
             <Table<PromptRow>
               size="small"
               pagination={false}
-              scroll={{ y: 260 }}
+              scroll={{ y: 240 }}
               columns={columns}
               dataSource={tableData}
             />
@@ -297,8 +357,9 @@ export function AutoAnnotateModal(
               type="secondary"
               style={{ display: "block", marginTop: 8, fontSize: 12 }}
             >
-              Классы внутри задачи CVAT не переименовываются. В модель
-              передаются только указанные текстовые запросы.
+              Можно указывать синонимы через запятую (например,{" "}
+              <code>car, truck, excavator</code>). Классы внутри CVAT при этом
+              не переименовываются.
             </Text>
           </div>
         )}
