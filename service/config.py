@@ -12,7 +12,13 @@ class Settings(BaseSettings):
     yoloe_conf: float = 0.25
     yoloe_imgsz: int = 640
     yoloe_device: str | None = None  # None -> автовыбор ("cuda", если доступна, иначе "cpu")
-
+    
+    dart_checkpoint: str | None = None
+    dart_conf: float = 0.3
+    dart_nms: float = 0.5
+    dart_imgsz: int = 1008
+    dart_device: str = "cpu"    
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

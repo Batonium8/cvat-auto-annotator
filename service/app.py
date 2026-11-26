@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from urllib3.exceptions import MaxRetryError
 
-from adapters import MatryoshkaAdapter, YoloeAdapter
+from adapters import DartAdapter, MatryoshkaAdapter, YoloeAdapter
 from core import BaseDetectorAdapter, ModelRegistry
 from service.config import settings
 from service.cvat_annotator import annotate_task, get_task_meta
@@ -30,8 +30,16 @@ def _build_registry() -> ModelRegistry:
             device=settings.yoloe_device,
         )
     )
+    registry.register(
+        DartAdapter(
+            checkpoint_path=settings.dart_checkpoint,
+            conf=settings.dart_conf,
+            nms=settings.dart_nms,
+            imgsz=settings.dart_imgsz,
+            device=settings.dart_device,
+        )
+    )
     return registry
-
 
 model_registry = _build_registry()
 

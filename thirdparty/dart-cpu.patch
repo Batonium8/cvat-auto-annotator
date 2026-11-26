@@ -1,0 +1,151 @@
+diff --git a/demo_multiclass.py b/demo_multiclass.py
+index fc75719..71e2a73 100644
+--- a/demo_multiclass.py
++++ b/demo_multiclass.py
+@@ -304,16 +304,16 @@ def run_multiclass_inference(
+             predictor.predict(_state, confidence_threshold=confidence_threshold,
+                               nms_threshold=nms_threshold)
+         if device == "cuda":
+-            torch.cuda.synchronize()
++            torch.cuda.synchronize() if torch.cuda.is_available() else None
+         print(f"  Warmup done")
+ 
+     # Timed backbone pass (with CUDA sync for accurate timing)
+     if device == "cuda":
+-        torch.cuda.synchronize()
++        torch.cuda.synchronize() if torch.cuda.is_available() else None
+     t0 = time.perf_counter()
+     state = predictor.set_image(image)
+     if device == "cuda":
+-        torch.cuda.synchronize()
++        torch.cuda.synchronize() if torch.cuda.is_available() else None
+     t_backbone = time.perf_counter() - t0
+     print(f"  Backbone encoding took {t_backbone*1000:.1f}ms")
+ 
+@@ -325,7 +325,7 @@ def run_multiclass_inference(
+ 
+     # Timed prediction pass
+     if device == "cuda":
+-        torch.cuda.synchronize()
++        torch.cuda.synchronize() if torch.cuda.is_available() else None
+     t0 = time.perf_counter()
+     results = predictor.predict(
+         state,
+@@ -333,7 +333,7 @@ def run_multiclass_inference(
+         nms_threshold=nms_threshold,
+     )
+     if device == "cuda":
+-        torch.cuda.synchronize()
++        torch.cuda.synchronize() if torch.cuda.is_available() else None
+     t_predict = time.perf_counter() - t0
+     print(f"  Prediction took {t_predict*1000:.1f}ms")
+ 
+@@ -425,13 +425,13 @@ def run_benchmark(
+         for _ in range(num_warmup):
+             run_fn()
+         if device == "cuda":
+-            torch.cuda.synchronize()
++            torch.cuda.synchronize() if torch.cuda.is_available() else None
+         times = []
+         for _ in range(num_runs):
+             t0 = time.perf_counter()
+             run_fn()
+             if device == "cuda":
+-                torch.cuda.synchronize()
++                torch.cuda.synchronize() if torch.cuda.is_available() else None
+             times.append(time.perf_counter() - t0)
+         avg = sum(times) / len(times) * 1000
+         print(f"  {name:45s} {avg:8.1f}ms avg")
+diff --git a/sam3/model/decoder.py b/sam3/model/decoder.py
+index 7a204be..6dc9c9c 100644
+--- a/sam3/model/decoder.py
++++ b/sam3/model/decoder.py
+@@ -275,7 +275,7 @@ class TransformerDecoder(nn.Module):
+             if resolution is not None and stride is not None:
+                 feat_size = resolution // stride
+                 coords_h, coords_w = self._get_coords(
+-                    feat_size, feat_size, device="cuda"
++                    feat_size, feat_size, device=("cuda" if torch.cuda.is_available() else "cpu")
+                 )
+                 self.compilable_cord_cache = (coords_h, coords_w)
+                 self.compilable_stored_size = (feat_size, feat_size)
+diff --git a/sam3/model/position_encoding.py b/sam3/model/position_encoding.py
+index bdceee5..9b58931 100644
+--- a/sam3/model/position_encoding.py
++++ b/sam3/model/position_encoding.py
+@@ -57,7 +57,7 @@ class PositionEmbeddingSine(nn.Module):
+                 (vit_size // 2, vit_size // 2),  # FPN 0.5x -> 36
+             ]
+             for size in precompute_sizes:
+-                tensors = torch.zeros((1, 1) + size, device="cuda")
++                tensors = torch.zeros((1, 1) + size, device=("cuda" if torch.cuda.is_available() else "cpu"))
+                 self.forward(tensors)
+                 buf = self.cache[size].clone().detach()
+                 self.register_buffer(
+diff --git a/sam3/model/sam3_image_processor.py b/sam3/model/sam3_image_processor.py
+index 83bbb0d..8f68884 100644
+--- a/sam3/model/sam3_image_processor.py
++++ b/sam3/model/sam3_image_processor.py
+@@ -14,7 +14,7 @@ from torchvision.transforms import v2
+ class Sam3Processor:
+     """ """
+ 
+-    def __init__(self, model, resolution=1008, device="cuda", confidence_threshold=0.5):
++    def __init__(self, model, resolution=1008, device=("cuda" if torch.cuda.is_available() else "cpu"), confidence_threshold=0.5):
+         self.model = model
+         self.resolution = resolution
+         self.device = device
+diff --git a/sam3/model/sam3_tracker_utils.py b/sam3/model/sam3_tracker_utils.py
+index e971dac..a765f47 100644
+--- a/sam3/model/sam3_tracker_utils.py
++++ b/sam3/model/sam3_tracker_utils.py
+@@ -6,7 +6,10 @@ import numpy as np
+ import torch
+ import torch.nn.functional as F
+ from numpy.typing import NDArray
+-from sam3.model.edt import edt_triton
++try:
++    from sam3.model.edt import edt_triton
++except ImportError:
++    edt_triton = None
+ 
+ 
+ def sample_box_points(
+diff --git a/sam3/model/vl_combiner.py b/sam3/model/vl_combiner.py
+index da35d2f..abde2c9 100644
+--- a/sam3/model/vl_combiner.py
++++ b/sam3/model/vl_combiner.py
+@@ -143,7 +143,7 @@ class SAM3VLBackbone(nn.Module):
+         }
+ 
+     def forward_text(
+-        self, captions, input_boxes=None, additional_text=None, device="cuda"
++        self, captions, input_boxes=None, additional_text=None, device=("cuda" if torch.cuda.is_available() else "cpu")
+     ):
+         return activation_ckpt_wrapper(self._forward_text_no_ack_ckpt)(
+             captions=captions,
+@@ -158,7 +158,7 @@ class SAM3VLBackbone(nn.Module):
+         captions,
+         input_boxes=None,
+         additional_text=None,
+-        device="cuda",
++        device=("cuda" if torch.cuda.is_available() else "cpu"),
+     ):
+         output = {}
+ 
+diff --git a/sam3/train/data/sam3_image_dataset.py b/sam3/train/data/sam3_image_dataset.py
+index c956d7b..a0c35f8 100644
+--- a/sam3/train/data/sam3_image_dataset.py
++++ b/sam3/train/data/sam3_image_dataset.py
+@@ -17,7 +17,10 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+ import torch
+ import torch.utils.data
+ import torchvision
+-from decord import cpu, VideoReader
++try:
++    from decord import cpu, VideoReader
++except ImportError:
++    cpu = VideoReader = None
+ from iopath.common.file_io import g_pathmgr
+ from PIL import Image as PILImage
+ from PIL.Image import DecompressionBombError
