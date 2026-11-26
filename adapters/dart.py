@@ -1,10 +1,10 @@
+from collections.abc import Sequence
 import logging
 import threading
 from typing import Any
 
 import PIL.Image
 
-from core.interfaces import BaseDetectorAdapter
 from core.models import BBox, DetectionContext
 from core.postprocess import nms_per_label
 
@@ -19,10 +19,11 @@ def _to_list(value: Any) -> list[Any]:
     return list(value)
 
 
-class DartAdapter(BaseDetectorAdapter):
-    """Адаптер для DART (SAM3 multi-class open-vocabulary detector)."""
-
-    name = "dart"
+class DartAdapter:
+    """
+    Open-vocabulary детектор на базе DART (SAM3 multi-class).
+    Реализует протокол TextPromptDetector с ленивой загрузкой и кэшем промптов.
+    """
 
     def __init__(
         self,
@@ -40,55 +41,72 @@ class DartAdapter(BaseDetectorAdapter):
 
         self._predictor: Any = None
         self._active_prompts: tuple[str, ...] | None = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+
+    @property
+    def name(self) -> str:
+        return "dart"
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._predictor is not None
 
     def _resolve_device(self, torch_module: Any) -> str:
-        if self._device == "auto":
+        if not self._device or self._device == "auto":
             return "cuda" if torch_module.cuda.is_available() else "cpu"
         return self._device
 
-    def _ensure_loaded(self) -> None:
-        if self._predictor is not None:
+    def load(self) -> None:
+        with self._lock:
+            if self._predictor is not None:
+                return
+
+            import torch
+            from sam3.model.sam3_multiclass import Sam3MultiClassPredictor
+            from sam3.model_builder import build_sam3_image_model
+
+            resolved_device = self._resolve_device(torch)
+            logger.info(
+                "Загрузка модели DART (checkpoint=%s, imgsz=%d) на устройство '%s'...",
+                self._checkpoint_path or "HF:facebook/sam3",
+                self._imgsz,
+                resolved_device,
+            )
+
+            model = build_sam3_image_model(
+                device=resolved_device,
+                checkpoint_path=self._checkpoint_path,
+                eval_mode=True,
+            )
+
+            if self._imgsz != 1008:
+                pos_enc = model.backbone.vision_backbone.position_encoding
+                pos_enc.precompute_for_resolution(self._imgsz)
+
+            self._predictor = Sam3MultiClassPredictor(
+                model,
+                device=resolved_device,
+                resolution=self._imgsz,
+                detection_only=True,
+            )
+            logger.info("Модель DART успешно загружена.")
+
+    def set_prompts(self, prompts: Sequence[str]) -> None:
+        prompt_list = list(prompts)
+        if not prompt_list:
             return
 
+        key = tuple(prompt_list)
         import torch
-        from sam3.model.sam3_multiclass import Sam3MultiClassPredictor
-        from sam3.model_builder import build_sam3_image_model
 
-        resolved_device = self._resolve_device(torch)
-        logger.info(
-            "Загрузка модели DART (checkpoint=%s, imgsz=%d) на устройство '%s'...",
-            self._checkpoint_path or "HF:facebook/sam3",
-            self._imgsz,
-            resolved_device,
-        )
+        with self._lock, torch.inference_mode():
+            self.load()
+            if self._active_prompts == key:
+                return
 
-        model = build_sam3_image_model(
-            device=resolved_device,
-            checkpoint_path=self._checkpoint_path,
-            eval_mode=True,
-        )
-
-        if self._imgsz != 1008:
-            pos_enc = model.backbone.vision_backbone.position_encoding
-            pos_enc.precompute_for_resolution(self._imgsz)
-
-        self._predictor = Sam3MultiClassPredictor(
-            model,
-            device=resolved_device,
-            resolution=self._imgsz,
-            detection_only=True,
-        )
-        logger.info("Модель DART успешно загружена.")
-
-    def _sync_prompts(self, prompts: list[str]) -> None:
-        key = tuple(prompts)
-        if self._active_prompts == key:
-            return
-
-        logger.info("Обновление текстовых промптов DART: %s", prompts)
-        self._predictor.set_classes(prompts)
-        self._active_prompts = key
+            logger.info("Обновление текстовых промптов DART: %s", prompt_list)
+            self._predictor.set_classes(prompt_list)
+            self._active_prompts = key
 
     def predict(
         self, image: PIL.Image.Image, context: DetectionContext
@@ -104,8 +122,8 @@ class DartAdapter(BaseDetectorAdapter):
         import torch
 
         with self._lock, torch.inference_mode():
-            self._ensure_loaded()
-            self._sync_prompts(prompts)
+            self.load()
+            self.set_prompts(prompts)
 
             state = self._predictor.set_image(image)
             results = self._predictor.predict(

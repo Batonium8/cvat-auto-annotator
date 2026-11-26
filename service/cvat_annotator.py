@@ -5,7 +5,7 @@ import logging
 import PIL.Image
 from cvat_sdk import make_client, models
 
-from core import BaseDetectorAdapter, DetectionContext
+from core import DetectionContext, Detector, TextPromptDetector
 from service.config import settings
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def get_task_meta(task_id: int) -> TaskMeta:
 
 def annotate_task(
     task_id: int,
-    adapter: BaseDetectorAdapter,
+    adapter: Detector,
     prompts: dict[str, str] | None = None,
     clear_existing: bool = False,
     on_progress: Callable[[int, int, int], None] | None = None,
@@ -88,6 +88,19 @@ def annotate_task(
             clear_existing,
             label_names,
         )
+
+        # Явно прогреваем модель и кодируем текстовые промпты один раз до обхода кадров
+        adapter.load()
+        if isinstance(adapter, TextPromptDetector):
+            warmup_ctx = DetectionContext(
+                width=0,
+                height=0,
+                labels=label_names,
+                prompts=prompts_map,
+            )
+            expanded_prompts, _ = warmup_ctx.expand_prompts()
+            if expanded_prompts:
+                adapter.set_prompts(expanded_prompts)
 
         shapes: list[models.LabeledShapeRequest] = []
 

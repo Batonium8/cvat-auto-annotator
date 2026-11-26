@@ -1,17 +1,25 @@
 import PIL.Image
 
-from core import BaseDetectorAdapter, BBox, DetectionContext
+from core.models import BBox, DetectionContext
 
 
-class MatryoshkaAdapter(BaseDetectorAdapter):
+class MatryoshkaAdapter:
     """
-    Адаптер Этапа 1: генерирует вложенные по центру прямоугольники ('матрёшку')
+    Адаптер псевдоразметки: генерирует вложенные по центру прямоугольники ('матрёшку')
     для каждого класса задачи с учетом размеров конкретного изображения.
+    Реализует протокол Detector (без TextPromptDetector).
     """
 
     @property
     def name(self) -> str:
         return "pseudo"
+
+    @property
+    def is_loaded(self) -> bool:
+        return True
+
+    def load(self) -> None:
+        pass
 
     def predict(
         self, image: PIL.Image.Image, context: DetectionContext

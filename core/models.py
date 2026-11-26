@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class BBox:
     """Единый формат прямоугольной аннотации в пикселях (xtl, ytl, xbr, ybr)."""
+
     label: str
     xtl: float
     ytl: float
@@ -12,16 +13,38 @@ class BBox:
     confidence: float = 1.0
 
 
+@dataclass(frozen=True, slots=True)
+class Polygon:
+    """Задел под модели сегментации: контур объекта в пикселях кадра."""
+
+    label: str
+    points: tuple[tuple[float, float], ...]
+    confidence: float = 1.0
+    bbox: BBox | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelInfo:
+    """Снимок возможностей и состояния зарегистрированного адаптера."""
+
+    name: str
+    is_loaded: bool
+    can_detect: bool
+    supports_prompts: bool
+    can_segment: bool
+
+
 @dataclass
 class DetectionContext:
     """Метаданные кадра и маппинг классов CVAT в текстовые промпты."""
+
     width: int
     height: int
     labels: list[str]
     prompts: dict[str, str] = field(default_factory=dict)
 
     def get_prompt(self, label: str) -> str:
-        """Возвращает кастомный промпт (Этап 3) или имя класса по умолчанию (Этапы 1-2)."""
+        """Возвращает кастомный промпт или имя класса по умолчанию."""
         custom = self.prompts.get(label, "").strip()
         return custom if custom else label
 

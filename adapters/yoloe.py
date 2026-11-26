@@ -1,49 +1,20 @@
+from collections.abc import Sequence
 import logging
 import threading
 from typing import Any
 
 import PIL.Image
-import torch
 
-from core import BaseDetectorAdapter, BBox, DetectionContext
+from core.models import BBox, DetectionContext
+from core.postprocess import nms_per_label
 
 logger = logging.getLogger(__name__)
 
-def _compute_iou(a: BBox, b: BBox) -> float:
-    inter_x1 = max(a.xtl, b.xtl)
-    inter_y1 = max(a.ytl, b.ytl)
-    inter_x2 = min(a.xbr, b.xbr)
-    inter_y2 = min(a.ybr, b.ybr)
 
-    inter_w = max(0.0, inter_x2 - inter_x1)
-    inter_h = max(0.0, inter_y2 - inter_y1)
-    inter_area = inter_w * inter_h
-    if inter_area == 0.0:
-        return 0.0
-
-    area_a = (a.xbr - a.xtl) * (a.ybr - a.ytl)
-    area_b = (b.xbr - b.xtl) * (b.ybr - b.ytl)
-    union = area_a + area_b - inter_area
-    return inter_area / union if union > 0.0 else 0.0
-
-
-def _nms_per_label(boxes: list[BBox], iou_threshold: float = 0.6) -> list[BBox]:
-    """Схлопывает перекрывающиеся рамки, если на одном объекте сработало несколько синонимов."""
-    ordered = sorted(boxes, key=lambda b: b.confidence, reverse=True)
-    kept: list[BBox] = []
-    for box in ordered:
-        is_duplicate = any(
-            existing.label == box.label and _compute_iou(existing, box) >= iou_threshold
-            for existing in kept
-        )
-        if not is_duplicate:
-            kept.append(box)
-    return kept
-
-class YoloeAdapter(BaseDetectorAdapter):
+class YoloeAdapter:
     """
     Open-vocabulary детектор на базе Ultralytics YOLOE.
-    Поддерживает ленивую загрузку весов, текстовые промпты и потокобезопасный инференс.
+    Реализует протокол TextPromptDetector с ленивой загрузкой и кэшем промптов.
     """
 
     def __init__(
@@ -61,40 +32,55 @@ class YoloeAdapter(BaseDetectorAdapter):
         self._device: str | None = None
         self._model: Any = None
         self._cached_prompts: tuple[str, ...] | None = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     @property
     def name(self) -> str:
         return "yoloe"
 
-    def _ensure_loaded(self) -> None:
-        if self._model is not None:
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    def _resolve_device(self, torch_module: Any) -> str:
+        if not self._requested_device or self._requested_device == "auto":
+            return "cuda" if torch_module.cuda.is_available() else "cpu"
+        return self._requested_device
+
+    def load(self) -> None:
+        with self._lock:
+            if self._model is not None:
+                return
+
+            import torch
+            from ultralytics import YOLOE
+
+            self._device = self._resolve_device(torch)
+            logger.info(
+                "Загрузка модели YOLOE (%s) на устройство '%s'...",
+                self._weights,
+                self._device,
+            )
+            model = YOLOE(self._weights)
+            model.to(self._device)
+            self._model = model
+            logger.info("Модель YOLOE успешно загружена.")
+
+    def set_prompts(self, prompts: Sequence[str]) -> None:
+        prompt_list = list(prompts)
+        if not prompt_list:
             return
 
-        from ultralytics import YOLOE
+        prompts_key = tuple(prompt_list)
+        with self._lock:
+            self.load()
+            if prompts_key == self._cached_prompts:
+                return
 
-        self._device = self._requested_device or (
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
-        logger.info(
-            "Загрузка модели YOLOE (%s) на устройство '%s'...",
-            self._weights,
-            self._device,
-        )
-        model = YOLOE(self._weights)
-        model.to(self._device)
-        self._model = model
-        logger.info("Модель YOLOE успешно загружена.")
-
-    def _sync_prompts(self, prompts: list[str]) -> None:
-        prompts_key = tuple(prompts)
-        if prompts_key == self._cached_prompts:
-            return
-
-        logger.info("Обновление текстовых промптов YOLOE: %s", prompts)
-        text_pe = self._model.get_text_pe(prompts)
-        self._model.set_classes(prompts, text_pe)
-        self._cached_prompts = prompts_key
+            logger.info("Обновление текстовых промптов YOLOE: %s", prompt_list)
+            text_pe = self._model.get_text_pe(prompt_list)
+            self._model.set_classes(prompt_list, text_pe)
+            self._cached_prompts = prompts_key
 
     def predict(
         self, image: PIL.Image.Image, context: DetectionContext
@@ -104,8 +90,8 @@ class YoloeAdapter(BaseDetectorAdapter):
             return []
 
         with self._lock:
-            self._ensure_loaded()
-            self._sync_prompts(prompts)
+            self.load()
+            self.set_prompts(prompts)
 
             results = self._model.predict(
                 source=image,
@@ -151,4 +137,4 @@ class YoloeAdapter(BaseDetectorAdapter):
                 )
             )
 
-        return _nms_per_label(detections)
+        return nms_per_label(detections)

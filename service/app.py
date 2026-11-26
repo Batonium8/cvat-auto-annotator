@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+from dataclasses import asdict
 import logging
 import threading
 
@@ -8,7 +10,7 @@ from pydantic import BaseModel, Field
 from urllib3.exceptions import MaxRetryError
 
 from adapters import DartAdapter, MatryoshkaAdapter, YoloeAdapter
-from core import BaseDetectorAdapter, ModelRegistry
+from core import Detector, ModelRegistry
 from service.config import settings
 from service.cvat_annotator import annotate_task, get_task_meta
 
@@ -41,11 +43,23 @@ def _build_registry() -> ModelRegistry:
     )
     return registry
 
+
 model_registry = _build_registry()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    preload_list = settings.preload_model_list()
+    if preload_list:
+        logger.info("Предзагрузка моделей при старте: %s", preload_list)
+        model_registry.preload(preload_list)
+    yield
+
 
 app = FastAPI(
     title="CVAT Auto-Annotator API",
-    version="0.2.1",
+    version="0.3.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -68,6 +82,18 @@ class HealthResponse(BaseModel):
 
 class ModelsResponse(BaseModel):
     models: list[str]
+
+
+class ModelInfoItem(BaseModel):
+    name: str
+    is_loaded: bool
+    can_detect: bool
+    supports_prompts: bool
+    can_segment: bool
+
+
+class ModelsInfoResponse(BaseModel):
+    models: list[ModelInfoItem]
 
 
 class AnnotateRequest(BaseModel):
@@ -111,7 +137,7 @@ _tasks_lock = threading.Lock()
 
 def _run_annotation_job(
     task_id: int,
-    adapter: BaseDetectorAdapter,
+    adapter: Detector,
     prompts: dict[str, str] | None,
     clear_existing: bool,
 ) -> None:
@@ -209,6 +235,13 @@ def get_models() -> ModelsResponse:
     return ModelsResponse(models=model_registry.list_models())
 
 
+@app.get("/models/info", response_model=ModelsInfoResponse)
+def get_models_info() -> ModelsInfoResponse:
+    return ModelsInfoResponse(
+        models=[ModelInfoItem(**asdict(info)) for info in model_registry.describe()]
+    )
+
+
 @app.get("/status/{task_id}", response_model=TaskStatusResponse)
 def get_task_status(task_id: int) -> TaskStatusResponse:
     with _tasks_lock:
@@ -226,8 +259,8 @@ def annotate(
     req: AnnotateRequest, background_tasks: BackgroundTasks
 ) -> AnnotateResponse:
     try:
-        adapter = model_registry.get(req.model)
-    except KeyError as exc:
+        adapter = model_registry.get_detector(req.model)
+    except (KeyError, TypeError) as exc:
         detail = exc.args[0] if exc.args else str(exc)
         raise HTTPException(status_code=400, detail=detail) from exc
 
